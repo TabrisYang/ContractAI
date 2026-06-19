@@ -6,9 +6,9 @@ from loguru import logger
 from .base import BaseLLMProvider, LLMMessage, ProviderCategory
 
 ANTHROPIC_MODELS = [
-    "claude-sonnet-4-6",
-    "claude-opus-4-6",
-    "claude-haiku-4-5-20251001",
+    "claude-opus-4-8",     # 最強;$5 / $25 per 1M tokens
+    "claude-sonnet-4-6",   # 平衡;$3 / $15
+    "claude-haiku-4-5",    # 最快最便宜;$1 / $5
 ]
 
 
@@ -16,7 +16,7 @@ class AnthropicProvider(BaseLLMProvider):
     BASE_URL = "https://api.anthropic.com/v1"
     API_VERSION = "2023-06-01"
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001", api_key: str = "", **kwargs):
+    def __init__(self, model: str = "claude-haiku-4-5", api_key: str = "", **kwargs):
         super().__init__(model)
         self.api_key = api_key
 

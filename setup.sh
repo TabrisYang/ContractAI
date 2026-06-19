@@ -25,6 +25,9 @@ SPACY_MODEL=zh_core_web_trf
 
 # 去識別化設置
 RARE_TERM_THRESHOLD=0.02
+
+# .doc 轉檔（留空 → 自動偵測 soffice / libreoffice;或填 soffice 絕對路徑）
+LIBREOFFICE_BIN=
 EOL
 
 echo "安裝腳本已創建完成。請運行以下命令完成設置："

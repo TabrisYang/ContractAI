@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict
 
+from celery.exceptions import Ignore
 from loguru import logger
 
 from .celery_app import app
 from .core.config import settings
 from .core.deidentifier import DocumentDeidentifier
+from .utils.doc_converter import ensure_docx
 
 logger.add(
     settings.LOG_DIR / "tasks.log",
@@ -33,8 +35,6 @@ def _get_deidentifier() -> DocumentDeidentifier:
 @app.task(
     bind=True,
     name="process_document",
-    max_retries=3,
-    default_retry_delay=30,
 )
 def process_document(self, file_path: str, job_id: str, options: Dict[str, Any] = None):
     """
@@ -60,6 +60,10 @@ def process_document(self, file_path: str, job_id: str, options: Dict[str, Any] 
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在：{file_path}")
 
+        # 若為舊版 .doc,先轉成 .docx(已是 .docx 則原樣回傳)
+        update_progress(2, "轉換文件格式")
+        file_path = ensure_docx(file_path, job_id)
+
         output_dir = settings.OUTPUT_DIR / job_id
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -80,4 +84,6 @@ def process_document(self, file_path: str, job_id: str, options: Dict[str, Any] 
             state="FAILURE",
             meta={"progress": 0, "message": f"處理失敗：{exc}", "error": str(exc)},
         )
-        raise self.retry(exc=exc)
+        # 確定性失敗（缺工具、檔案讀不到等）重試也不會成功;
+        # 用 Ignore 保留上面自訂的 FAILURE 狀態,避免 Celery 再次序列化例外而崩潰。
+        raise Ignore()

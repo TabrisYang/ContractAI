@@ -4,7 +4,7 @@
 
 ## 功能特點
 
-- 支援 .docx 檔案處理
+- 支援 .docx 與舊版 .doc 檔案處理（.doc 會自動轉成 .docx）
 - 多種去識別化方法整合：
   - 正則表達式匹配（身份證、手機、統編等）
   - NER 模型識別（姓名、公司、地址等）
@@ -17,6 +17,11 @@
 - Python 3.11+
 - Redis (用於任務隊列)
 - MacOS/Linux 環境 (Windows 需額外設置)
+- (選用) 上傳舊版 .doc 檔需要轉檔工具，擇一安裝：
+  - 推薦（保留排版）：`brew install --cask libreoffice`（macOS）/ `apt install libreoffice`（Linux）
+  - 輕量退化（純文字）：`brew install antiword` / `apt install antiword`
+  - 未安裝時仍可正常使用 .docx；上傳 .doc 才會提示需安裝。
+  - 若 LibreOffice 不在 PATH，可於 .env 設定 `LIBREOFFICE_BIN=/絕對路徑/soffice`。
 
 ## 🚀 快速開始
 

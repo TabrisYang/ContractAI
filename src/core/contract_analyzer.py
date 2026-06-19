@@ -142,7 +142,7 @@ async def analyze_contract(
     # 儲存分析結果
     analysis_path = output_dir / f"{job_id}_analysis.json"
     analysis_path.write_text(
-        analysis.json(ensure_ascii=False, indent=2),
+        analysis.model_dump_json(indent=2),
         encoding="utf-8",
     )
     logger.info(f"合約分析完成，結果儲存至 {analysis_path}")

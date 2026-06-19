@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # 去識別化設定
     RARE_TERM_THRESHOLD: float = 0.02
 
+    # .doc 轉檔設定（空字串 → 自動偵測 soffice / libreoffice / macOS 預設路徑）
+    LIBREOFFICE_BIN: str = ""
+
     # RAG 設定
     EMBEDDING_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
     RAG_CHUNK_SIZE: int = 400    # 每段字數

@@ -25,6 +25,7 @@ task_soft_time_limit = 3300  # 55 分鐘軟超時
 result_expires = 60 * 60 * 24 * 3  # 3 天過期
 
 # 工作進程設置
+worker_pool = 'solo'   # macOS 上 prefork fork 後載入 PyTorch/spaCy 會 SIGSEGV,強制 solo
 worker_prefetch_multiplier = 1
 worker_max_tasks_per_child = 100
 

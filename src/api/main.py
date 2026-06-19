@@ -22,8 +22,6 @@ from ..core.contract_generator import get_generator
 from ..core.llm.factory import create_provider, get_all_providers_info
 from ..models.schemas import (
     AnalyzeRequest,
-    BrowserSetupRequest,
-    BrowserSetupStatus,
     ChatRequest,
     ChatResponse,
     ContractAnalysis,
@@ -67,11 +65,11 @@ async def deidentify_contract(
     file: UploadFile,
     options: Optional[str] = Form(default=None),
 ):
-    """上傳 .docx 合約，非同步進行去識別化處理"""
-    if not file.filename.lower().endswith(".docx"):
+    """上傳 .docx / .doc 合約，非同步進行去識別化處理"""
+    if not file.filename.lower().endswith((".docx", ".doc")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="僅支援 .docx 檔案格式",
+            detail="僅支援 .docx 或 .doc 檔案格式",
         )
 
     req_options: dict = {}
@@ -98,7 +96,12 @@ async def deidentify_contract(
             detail=f"儲存檔案失敗：{e}",
         )
 
-    process_document.delay(str(file_path), job_id, req_options)
+    # 必須指定 task_id=job_id,否則 Celery 會自動產生隨機 task id,
+    # 導致 /status/{job_id} 永遠查不到任務而卡在 PENDING(排隊等候中)。
+    process_document.apply_async(
+        args=[str(file_path), job_id, req_options],
+        task_id=job_id,
+    )
     logger.info(f"已建立去識別化任務 {job_id}，檔案：{file.filename}")
 
     return DeidentificationResponse(
@@ -144,12 +147,17 @@ async def check_status(job_id: str):
             result=task.result or {},
         )
     else:
+        if isinstance(info, dict):
+            msg = info.get("message", "處理失敗")
+            err = info.get("error") or info.get("message") or "未知錯誤"
+        else:
+            msg, err = "處理失敗", (str(info) if info else "未知錯誤")
         return JobStatus(
             job_id=job_id,
             status=ProcessingStatus.FAILED,
             progress=0,
-            message="處理失敗",
-            error=str(info) if info else "未知錯誤",
+            message=msg,
+            error=err,
         )
 
 
@@ -295,54 +303,6 @@ async def list_providers():
     return get_all_providers_info()
 
 
-# ── 瀏覽器訂閱制 Session 設定 ──────────────────────────────────────────
-
-@app.post(
-    "/api/v1/browser/setup",
-    response_model=BrowserSetupStatus,
-    summary="啟動瀏覽器登入（訂閱制 LLM）",
-)
-async def setup_browser(request: BrowserSetupRequest):
-    """
-    開啟瀏覽器讓使用者手動登入 ChatGPT Plus 或 Claude Pro，儲存 session。
-    僅需執行一次。
-    """
-    from ..core.llm.browser_provider import BrowserChatGPTProvider, BrowserClaudeProvider
-
-    cls_map = {
-        "browser_chatgpt": BrowserChatGPTProvider,
-        "browser_claude": BrowserClaudeProvider,
-    }
-    if request.provider not in cls_map:
-        raise HTTPException(status_code=400, detail=f"不支援的提供者：{request.provider}")
-
-    instance = cls_map[request.provider](headless=False)
-    try:
-        await instance.setup_session()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    return BrowserSetupStatus(
-        provider=request.provider,
-        is_configured=True,
-        message="登入成功，session 已儲存",
-    )
-
-
-@app.get("/api/v1/browser/status", summary="查詢瀏覽器 session 狀態")
-async def browser_status():
-    from ..core.llm.browser_provider import BrowserChatGPTProvider, BrowserClaudeProvider
-
-    return {
-        "browser_chatgpt": {
-            "configured": BrowserChatGPTProvider.SESSION_FILE.exists(),
-        },
-        "browser_claude": {
-            "configured": BrowserClaudeProvider.SESSION_FILE.exists(),
-        },
-    }
-
-
 # ── 合約生成 ──────────────────────────────────────────────────────
 
 @app.get("/api/v1/corpus/status", response_model=CorpusStatus, summary="參考合約庫狀態")
@@ -376,6 +336,104 @@ async def build_corpus():
         cwd=str(settings.BASE_DIR),
     )
     return {"message": "合約庫同步已在背景啟動（去識別化 + 向量索引）", "pid": proc.pid}
+
+
+@app.post("/api/v1/corpus/add/{job_id}", summary="把已去識別化的上傳合約加入合約庫")
+async def add_job_to_corpus(job_id: str):
+    """將單一已完成去識別化的任務增量加入合約庫（供日後生成參考）。"""
+    output_dir = Path(settings.OUTPUT_DIR) / job_id
+    txt = output_dir / f"{job_id}_deidentified.txt"
+    if not txt.exists():
+        raise HTTPException(status_code=404, detail="找不到去識別化文字檔，請先完成去識別化")
+    text = txt.read_text(encoding="utf-8")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="去識別化內容為空")
+
+    import index_contracts as idx
+    import chromadb
+
+    source = f"upload_{job_id[:8]}"
+
+    # 防重複:同一 source 已存在就不重加
+    try:
+        chroma = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+        col = chroma.get_collection(idx.COLLECTION_NAME)
+        hit = col.get(where={"source": source}, limit=1)
+        if hit and hit.get("ids"):
+            return {"added": False, "message": "此合約已在合約庫中", "source": source}
+    except Exception:
+        pass  # collection 尚未建立 → 首次,build_index 會自動建立
+
+    chunks = idx.chunk_text(text, source=source)
+    if not chunks:
+        raise HTTPException(status_code=400, detail="內容太短，無法建立索引段落")
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, lambda: idx.build_index(chunks, full_rebuild=False))
+
+    # 依實際庫內不同來源數重算統計(避免與 manifest 計數漂移)
+    from collections import Counter
+    col = chromadb.PersistentClient(path=str(settings.CHROMA_DIR)).get_collection(idx.COLLECTION_NAME)
+    data = col.get(include=["metadatas"])
+    counts = Counter((m or {}).get("source", "?") for m in (data.get("metadatas") or []))
+    total_contracts, total_chunks = len(counts), col.count()
+    idx.write_summary(total_contracts, total_chunks)
+    logger.info(f"合約已加入合約庫：{source}（{len(chunks)} 段，共 {total_contracts} 份）")
+    return {
+        "added": True,
+        "message": f"已加入合約庫（共 {total_contracts} 份）",
+        "source": source,
+        "chunks": len(chunks),
+    }
+
+
+@app.get("/api/v1/corpus/list", summary="列出合約庫內容（依來源彙總）")
+async def corpus_list():
+    """列出合約庫每個來源(source)及其段落數。"""
+    from collections import Counter
+    import index_contracts as idx
+    import chromadb
+
+    try:
+        c = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+        col = c.get_collection(idx.COLLECTION_NAME)
+        data = col.get(include=["metadatas"])
+    except Exception:
+        return {"items": [], "total_contracts": 0, "total_chunks": 0}
+
+    counts = Counter((m or {}).get("source", "?") for m in (data.get("metadatas") or []))
+    items = sorted(
+        ({"source": s, "chunks": n} for s, n in counts.items()),
+        key=lambda x: x["source"],
+    )
+    return {"items": items, "total_contracts": len(counts), "total_chunks": sum(counts.values())}
+
+
+@app.delete("/api/v1/corpus/item/{source}", summary="從合約庫移除某一份（依來源）")
+async def corpus_remove(source: str):
+    """刪除指定 source 的所有段落,並重算合約庫統計。"""
+    from collections import Counter
+    import index_contracts as idx
+    import chromadb
+
+    try:
+        c = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+        col = c.get_collection(idx.COLLECTION_NAME)
+    except Exception:
+        raise HTTPException(status_code=404, detail="合約庫尚未建立")
+
+    hit = col.get(where={"source": source}, limit=1)
+    if not (hit and hit.get("ids")):
+        raise HTTPException(status_code=404, detail=f"找不到來源：{source}")
+
+    col.delete(where={"source": source})
+
+    # 依剩餘段落重算統計(比單純遞減更穩健)
+    data = col.get(include=["metadatas"])
+    counts = Counter((m or {}).get("source", "?") for m in (data.get("metadatas") or []))
+    idx.write_summary(len(counts), col.count())
+    logger.info(f"已從合約庫移除來源：{source}（剩 {len(counts)} 份）")
+    return {"removed": source, "total_contracts": len(counts), "total_chunks": col.count()}
 
 
 @app.post(

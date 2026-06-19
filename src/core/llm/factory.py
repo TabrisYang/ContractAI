@@ -9,7 +9,7 @@ from .openai_provider import OpenAIProvider
 from .anthropic_provider import AnthropicProvider
 from .google_provider import GoogleProvider
 from .ollama_provider import OllamaProvider, CustomOpenAIProvider
-from .browser_provider import BrowserChatGPTProvider, BrowserClaudeProvider
+from .claude_cli_provider import ClaudeCLIProvider
 
 # 提供者代碼 → 類別的對應
 PROVIDER_MAP = {
@@ -18,8 +18,7 @@ PROVIDER_MAP = {
     "google": GoogleProvider,
     "ollama": OllamaProvider,
     "custom": CustomOpenAIProvider,
-    "browser_chatgpt": BrowserChatGPTProvider,
-    "browser_claude": BrowserClaudeProvider,
+    "claude_cli": ClaudeCLIProvider,
 }
 
 
@@ -28,7 +27,7 @@ def create_provider(provider_type: str, **kwargs) -> BaseLLMProvider:
     根據提供者類型與參數建立 LLM provider 實例
 
     Args:
-        provider_type: 提供者代碼（openai / anthropic / google / ollama / custom / browser_chatgpt / browser_claude）
+        provider_type: 提供者代碼（openai / anthropic / google / ollama / custom / claude_cli）
         **kwargs: 傳遞給提供者建構子的參數（model, api_key, base_url 等）
 
     Returns:
@@ -99,26 +98,14 @@ def get_all_providers_info() -> List[Dict[str, Any]]:
             "models": ["local-model"],
         },
         {
-            "type": "browser_chatgpt",
-            "name": "ChatGPT Plus（訂閱制）",
+            "type": "claude_cli",
+            "name": "Claude 訂閱制（CLI，推薦）",
             "category": ProviderCategory.BROWSER,
             "category_label": "訂閱制",
-            "description": "使用您的 ChatGPT Plus 訂閱，無需另付 API 費用，需首次手動登入",
+            "description": "用本機 Claude Code 訂閱額度，免 API Key、可選模型；需先安裝並登入 claude CLI",
             "requires_api_key": False,
             "requires_base_url": False,
-            "requires_setup": True,
-            "models": BrowserChatGPTProvider.get_default_models(),
-        },
-        {
-            "type": "browser_claude",
-            "name": "Claude Pro（訂閱制）",
-            "category": ProviderCategory.BROWSER,
-            "category_label": "訂閱制",
-            "description": "使用您的 Claude Pro 訂閱，無需另付 API 費用，需首次手動登入",
-            "requires_api_key": False,
-            "requires_base_url": False,
-            "requires_setup": True,
-            "models": BrowserClaudeProvider.get_default_models(),
+            "models": ClaudeCLIProvider.get_default_models(),
         },
     ]
     return providers

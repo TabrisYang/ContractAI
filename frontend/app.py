@@ -234,12 +234,12 @@ def render_sidebar():
 
 def render_deidentify_tab():
     st.header("📄 合約去識別化")
-    st.write("上傳 .docx 合約，系統將自動遮罩個人資訊（姓名、電話、身分證字號、地址等）")
+    st.write("上傳 .docx / .doc 合約，系統將自動遮罩個人資訊（姓名、電話、身分證字號、地址等）")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        uploaded = st.file_uploader("選擇合約檔案（.docx）", type=["docx"])
+        uploaded = st.file_uploader("選擇合約檔案（.docx / .doc）", type=["docx", "doc"])
 
     with col2:
         st.subheader("偵測方法")
@@ -320,6 +320,55 @@ def render_deidentify_tab():
             with dl_col3:
                 txt_bytes = requests.get(f"{API_BASE}/download/{job_id}?file_type=txt", timeout=30).content
                 st.download_button("⬇️ 純文字 .txt", txt_bytes, f"{job_id}_deidentified.txt")
+
+            st.caption("💡 可於下方將此合約加入合約庫，作為日後合約生成的參考範本")
+
+    # ── 加入合約庫(以 session_state 控制,避免 Streamlit 重跑後消失)──
+    last = st.session_state.get("last_job_id")
+    if last:
+        st.divider()
+        st.caption(f"最近完成的任務：`{last}`")
+        if st.button("📚 加入合約庫（供日後生成參考）", use_container_width=True):
+            with st.spinner("正在加入合約庫（首次需載入向量模型，請稍候）..."):
+                try:
+                    r = requests.post(f"{API_BASE}/corpus/add/{last}", timeout=180)
+                except requests.RequestException as e:
+                    st.error(f"加入失敗：{e}")
+                    r = None
+            if r is not None:
+                if r.ok:
+                    d = r.json()
+                    (st.success if d.get("added") else st.info)(d.get("message", "完成"))
+                else:
+                    try:
+                        detail = r.json().get("detail", r.text)
+                    except Exception:
+                        detail = r.text
+                    st.error(f"加入失敗：{detail}")
+
+    # ── 合約庫管理(查看 / 移除)──
+    with st.expander("📚 合約庫管理（查看 / 移除）"):
+        lst = api_get("/corpus/list") or {}
+        items = lst.get("items", [])
+        st.caption(
+            f"目前合約庫:{lst.get('total_contracts', 0)} 份 / "
+            f"{lst.get('total_chunks', 0)} 段　(upload_* 為你上傳加入的;contract_* 為原始合約庫)"
+        )
+        if not items:
+            st.write("（合約庫為空）")
+        for it in items:
+            c1, c2 = st.columns([5, 1])
+            c1.write(f"`{it['source']}`　{it['chunks']} 段")
+            if c2.button("移除", key=f"rm_{it['source']}"):
+                try:
+                    rr = requests.delete(f"{API_BASE}/corpus/item/{it['source']}", timeout=60)
+                    if rr.ok:
+                        st.success(f"已移除 {it['source']}")
+                        st.rerun()
+                    else:
+                        st.error(f"移除失敗：{rr.json().get('detail', rr.text)}")
+                except requests.RequestException as e:
+                    st.error(f"移除失敗：{e}")
 
 
 # ── Tab 2：合約分析 ──────────────────────────────────────────────

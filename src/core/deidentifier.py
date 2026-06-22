@@ -305,6 +305,8 @@ class DocumentDeidentifier:
                 "entities_by_type": entities_by_type,
                 "processing_time": elapsed,
                 "masking_stats": stats,
+                # PDF 來源會帶 "text" / "ocr";docx/doc 來源為 None
+                "extract_method": options.get("extract_method"),
             },
         }
 

@@ -234,12 +234,13 @@ def render_sidebar():
 
 def render_deidentify_tab():
     st.header("📄 合約去識別化")
-    st.write("上傳 .docx / .doc 合約，系統將自動遮罩個人資訊（姓名、電話、身分證字號、地址等）")
+    st.write("上傳 .docx / .doc / .pdf 合約，系統將自動遮罩個人資訊（姓名、電話、身分證字號、地址等）")
+    st.caption("PDF 支援電子文字型；掃描/拍照檔會自動以 OCR 辨識（需安裝 OCR 系統依賴，且不保留原版面）")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
-        uploaded = st.file_uploader("選擇合約檔案（.docx / .doc）", type=["docx", "doc"])
+        uploaded = st.file_uploader("選擇合約檔案（.docx / .doc / .pdf）", type=["docx", "doc", "pdf"])
 
     with col2:
         st.subheader("偵測方法")
@@ -297,6 +298,12 @@ def render_deidentify_tab():
         if result.get("status") == "completed":
             st.success("去識別化完成！")
             analysis = result.get("result", {}).get("analysis", {})
+
+            if analysis.get("extract_method") == "ocr":
+                st.warning(
+                    "⚠️ 此 PDF 為掃描/影像檔，內容以 OCR 辨識取得。"
+                    "OCR 可能有錯字或漏字，導致部分個資未被遮罩，**建議下載後人工複核**。"
+                )
 
             if analysis:
                 m1, m2, m3 = st.columns(3)

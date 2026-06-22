@@ -5,6 +5,8 @@
 ## 功能特點
 
 - 支援 .docx 與舊版 .doc 檔案處理（.doc 會自動轉成 .docx）
+- 支援 PDF 檔案處理：電子文字型直接抽取；掃描/拍照型自動以 OCR 辨識
+  （PDF 經抽取文字後處理，**不保留原 PDF 版面**，輸出為去識別化的 docx/txt/json）
 - 多種去識別化方法整合：
   - 正則表達式匹配（身份證、手機、統編等）
   - NER 模型識別（姓名、公司、地址等）
@@ -22,6 +24,10 @@
   - 輕量退化（純文字）：`brew install antiword` / `apt install antiword`
   - 未安裝時仍可正常使用 .docx；上傳 .doc 才會提示需安裝。
   - 若 LibreOffice 不在 PATH，可於 .env 設定 `LIBREOFFICE_BIN=/絕對路徑/soffice`。
+- (選用) 上傳掃描/拍照型 PDF 需要 OCR 系統工具：
+  - macOS：`brew install poppler tesseract tesseract-lang`
+  - Linux：`apt install poppler-utils tesseract-ocr tesseract-ocr-chi-tra`
+  - 未安裝時仍可處理電子文字型 PDF；僅掃描檔會提示需安裝 OCR。
 
 ## 🚀 快速開始
 

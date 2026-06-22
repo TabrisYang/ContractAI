@@ -60,9 +60,17 @@ def process_document(self, file_path: str, job_id: str, options: Dict[str, Any] 
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"文件不存在：{file_path}")
 
-        # 若為舊版 .doc,先轉成 .docx(已是 .docx 則原樣回傳)
+        # 依副檔名正規化成 .docx:
+        #   .pdf → 抽文字(必要時 OCR)後組成 .docx
+        #   .doc → 轉成 .docx;.docx → 原樣放行
         update_progress(2, "轉換文件格式")
-        file_path = ensure_docx(file_path, job_id)
+        if Path(file_path).suffix.lower() == ".pdf":
+            from .utils.pdf_extractor import pdf_to_docx
+            file_path, extract_method = pdf_to_docx(file_path, job_id)
+            # 讓下游 analysis 標記抽取方式（OCR 結果建議人工複核）
+            options["extract_method"] = extract_method
+        else:
+            file_path = ensure_docx(file_path, job_id)
 
         output_dir = settings.OUTPUT_DIR / job_id
         output_dir.mkdir(parents=True, exist_ok=True)

@@ -65,11 +65,11 @@ async def deidentify_contract(
     file: UploadFile,
     options: Optional[str] = Form(default=None),
 ):
-    """上傳 .docx / .doc 合約，非同步進行去識別化處理"""
-    if not file.filename.lower().endswith((".docx", ".doc")):
+    """上傳 .docx / .doc / .pdf 合約，非同步進行去識別化處理"""
+    if not file.filename.lower().endswith((".docx", ".doc", ".pdf")):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="僅支援 .docx 或 .doc 檔案格式",
+            detail="僅支援 .docx、.doc 或 .pdf 檔案格式",
         )
 
     req_options: dict = {}

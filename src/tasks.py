@@ -84,6 +84,22 @@ def process_document(self, file_path: str, job_id: str, options: Dict[str, Any] 
         )
 
         logger.info(f"文件處理完成（job_id: {job_id}）")
+
+        # 自動把去識別化結果增量加入參考合約庫（回饋迴路 B：合約庫越大、檢索越廣）
+        # 任何失敗都不得影響去識別化主流程，故全包在 try 內。
+        try:
+            txt_path = output_dir / f"{job_id}_deidentified.txt"
+            if txt_path.exists():
+                import sys
+                if str(settings.BASE_DIR) not in sys.path:
+                    sys.path.insert(0, str(settings.BASE_DIR))
+                import index_contracts as idx
+                text = txt_path.read_text(encoding="utf-8")
+                info = idx.add_text_to_corpus(text, source=f"upload_{job_id[:8]}")
+                logger.info(f"自動加入合約庫（job_id: {job_id}）：{info}")
+        except Exception as e:
+            logger.warning(f"自動加入合約庫失敗（不影響去識別化，job_id: {job_id}）：{e}")
+
         return result
 
     except Exception as exc:

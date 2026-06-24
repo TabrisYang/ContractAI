@@ -216,16 +216,83 @@ class ContractGenerator:
         )
         return req
 
-    # ── 步驟 2：向量搜尋骨架（不用 LLM）──────────────────────────
+    # ── 步驟 2：向量搜尋骨架 + 採用回饋重排（不用 LLM）──────────────
 
-    def _search_reference_clauses(self, query: str, top_k: int = 3) -> list[str]:
-        """向量搜尋最相關的真實合約段落"""
+    def _search_reference_chunks(self, query: str, top_k: int = 3) -> list[dict]:
+        """向量搜尋並以「cosine + β·採用分數」重排，回傳 [{id, text}]。
+
+        採用分數用貝氏平滑：acceptance = (times_adopted + 1) / (times_retrieved + 2)，
+        新範本樣本少時收斂到 0.5、累積夠多才逼近真實採用率。
+        GEN_THOMPSON_SAMPLING 開啟時改從 Beta(adopted+1, refined+1) 抽樣，平衡探索/利用。
+        並累計被選中段落的 times_retrieved。
+        """
         collection = self._get_collection()
         embedder = self._get_embedder()
         q_emb = embedder.encode([query]).tolist()
-        results = collection.query(query_embeddings=q_emb, n_results=top_k)
+
+        n_cand = max(top_k, settings.RAG_RERANK_CANDIDATES)
+        results = collection.query(
+            query_embeddings=q_emb,
+            n_results=n_cand,
+            include=["documents", "metadatas", "distances"],
+        )
         docs = results.get("documents", [[]])[0]
-        return docs
+        ids = results.get("ids", [[]])[0]
+        metas = results.get("metadatas", [[]])[0]
+        dists = results.get("distances", [[]])[0]
+
+        beta = settings.GEN_ACCEPTANCE_WEIGHT
+        use_thompson = settings.GEN_THOMPSON_SAMPLING
+        ranked = []
+        for i in range(len(docs)):
+            cosine = 1.0 - float(dists[i]) if i < len(dists) else 0.0
+            meta = metas[i] if i < len(metas) else {}
+            retrieved = (meta or {}).get("times_retrieved", 0) or 0
+            adopted = (meta or {}).get("times_adopted", 0) or 0
+            refined = (meta or {}).get("times_refined_away", 0) or 0
+            if use_thompson:
+                acceptance = self._beta_sample(adopted + 1, refined + 1, seed=(i, retrieved))
+            else:
+                acceptance = (adopted + 1) / (retrieved + 2)
+            cid = ids[i] if i < len(ids) else None
+            ranked.append((cosine + beta * acceptance, docs[i], cid))
+
+        ranked.sort(key=lambda x: x[0], reverse=True)
+        top = ranked[:top_k]
+
+        top_ids = [t[2] for t in top if t[2] is not None]
+        self._bump_corpus_counts(collection, top_ids, field="times_retrieved")
+        return [{"id": t[2], "text": t[1]} for t in top]
+
+    def _search_reference_clauses(self, query: str, top_k: int = 3) -> list[str]:
+        """相容舊介面：只回傳段落文字。"""
+        return [c["text"] for c in self._search_reference_chunks(query, top_k)]
+
+    @staticmethod
+    def _beta_sample(alpha: float, beta_param: float, seed=None) -> float:
+        """Beta 分布抽樣（Thompson Sampling）。以 numpy 預設亂數產生器。"""
+        import numpy as np
+        rng = np.random.default_rng()
+        return float(rng.beta(alpha, beta_param))
+
+    @staticmethod
+    def _bump_corpus_counts(collection, chunk_ids: list, field: str, amount: int = 1):
+        """為 corpus 段落 metadata 計數器 +amount（times_retrieved/adopted/refined_away）。"""
+        if not chunk_ids:
+            return
+        try:
+            cur = collection.get(ids=chunk_ids, include=["metadatas"])
+            got_ids = cur.get("ids") or []
+            metas = cur.get("metadatas") or []
+            new_metas = []
+            for m in metas:
+                m = dict(m or {})
+                m[field] = (m.get(field, 0) or 0) + amount
+                new_metas.append(m)
+            if got_ids:
+                collection.update(ids=got_ids, metadatas=new_metas)
+        except Exception as e:
+            logger.warning(f"更新 corpus 段落計數失敗（{field}）：{e}")
 
     # ── 步驟 3：逐條填充（LLM，每次只處理一條）──────────────────
 
@@ -234,11 +301,13 @@ class ContractGenerator:
         clause_type: str,
         requirements: GenerationRequirements,
         llm: BaseLLMProvider,
-    ) -> str:
-        """為單一條款找參考例句並讓 LLM 客製化填充"""
-        # 搜尋此條款類型的參考例句（純向量搜尋，不用 LLM）
+    ) -> tuple[str, list]:
+        """為單一條款找參考例句並讓 LLM 客製化填充，回傳 (條款文字, 參考段落 id)。"""
+        # 搜尋此條款類型的參考例句（純向量搜尋 + 採用回饋重排，不用 LLM）
         query = f"{requirements.contract_type} {clause_type}"
-        references = self._search_reference_clauses(query, top_k=2)
+        ref_chunks = self._search_reference_chunks(query, top_k=2)
+        references = [c["text"] for c in ref_chunks]
+        used_ids = [c["id"] for c in ref_chunks if c["id"]]
         ref_text = "\n---\n".join(references) if references else "（無參考例句）"
 
         prompt = FILL_CLAUSE_PROMPT.format(
@@ -247,7 +316,7 @@ class ContractGenerator:
         )
         messages = [LLMMessage(role="user", content=prompt)]
         result = await llm.chat(messages, temperature=0.2, max_tokens=400)
-        return result.strip()
+        return result.strip(), used_ids
 
     # ── 步驟 4：生成前言與簽署欄（LLM，小 token）────────────────
 
@@ -297,10 +366,18 @@ class ContractGenerator:
         preamble, closing = await self._generate_preamble_and_closing(requirements, llm)
 
         # 逐條生成
+        used_chunk_ids: list = []
         for i, clause_type in enumerate(clause_types, 1):
             logger.info(f"  生成第 {i} 條：{clause_type}")
-            content = await self._fill_clause(clause_type, requirements, llm)
+            content, used_ids = await self._fill_clause(clause_type, requirements, llm)
+            used_chunk_ids.extend(used_ids)
             sections.append((i, clause_type, content))
+
+        # 記錄本次生成參考了哪些 corpus 段落（供採用/refine 回饋更新權重）
+        unique_ids = sorted(set(used_chunk_ids))
+        (output_dir / f"{gen_id}_used_chunks.json").write_text(
+            json.dumps(unique_ids, ensure_ascii=False), encoding="utf-8"
+        )
 
         # 組合成完整合約（markdown）
         contract_md = self._assemble_markdown(requirements, preamble, sections, closing)
@@ -349,7 +426,50 @@ class ContractGenerator:
         docx_path = output_dir / f"{gen_id}_draft.docx"
         self._save_plain_docx(refined, docx_path)
 
+        # 回饋：本次草稿被要求修改 → 參考段落記為「被 refine」（負訊號）
+        self.record_generation_feedback(gen_id, adopted=False, output_dir=output_dir, feedback=feedback)
+
         return refined
+
+    def _used_chunk_ids(self, gen_id: str, output_dir: Path) -> list:
+        path = output_dir / f"{gen_id}_used_chunks.json"
+        if not path.exists():
+            return []
+        try:
+            return json.loads(path.read_text(encoding="utf-8")) or []
+        except Exception:
+            return []
+
+    def record_generation_feedback(
+        self,
+        gen_id: str,
+        adopted: bool,
+        output_dir: Path,
+        feedback: str = "",
+    ) -> int:
+        """記錄生成回饋並更新參考段落權重（回饋迴路 C）。
+
+        adopted=True（使用者下載/保存最終合約）→ times_adopted +1（提權）
+        adopted=False（被 refine）→ times_refined_away +1（降權）
+        回傳更新的段落數。同時寫入統一回饋庫（loop="gen"）。
+        """
+        from .feedback_store import feedback_store
+        chunk_ids = self._used_chunk_ids(gen_id, output_dir)
+        feedback_store.record(
+            loop="gen",
+            job_id=gen_id,
+            target_ref={"chunk_ids": chunk_ids},
+            signal={"adopted": adopted, "feedback": feedback},
+        )
+        if not chunk_ids:
+            return 0
+        field = "times_adopted" if adopted else "times_refined_away"
+        try:
+            collection = self._get_collection()
+        except Exception:
+            return 0
+        self._bump_corpus_counts(collection, chunk_ids, field=field)
+        return len(chunk_ids)
 
     # ── 工具方法 ──────────────────────────────────────────────────
 

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     CHROMA_DIR: Path = BASE_DIR / "chroma_db"   # RAG 向量資料庫
     CONTRACTS_SOURCE_DIR: Path = BASE_DIR.parent / "contracts"          # 使用者放原始合約
     CONTRACTS_DEIDENTIFIED_DIR: Path = BASE_DIR / "contracts_deidentified"  # 去識別化後的合約
+    FEEDBACK_DIR: Path = BASE_DIR / "feedback"  # 使用者回饋（越用越進步）
 
     # Redis 設定
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -35,6 +36,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "paraphrase-multilingual-MiniLM-L12-v2"
     RAG_CHUNK_SIZE: int = 400    # 每段字數
     RAG_TOP_K: int = 4           # 取幾段相關內容
+    RAG_RERANK_CANDIDATES: int = 10  # reranker 前先取幾段候選
+    RAG_FEEDBACK_WEIGHT: float = 0.2  # 重排時回饋分數的權重 β（final = cosine + β·feedback）
+
+    # 生成回饋重排（P5）
+    GEN_ACCEPTANCE_WEIGHT: float = 0.3   # 採用分數權重 β（final = cosine + β·acceptance）
+    GEN_THOMPSON_SAMPLING: bool = False  # 是否用 Thompson Sampling 解決「強者恆強」
 
     # FastAPI 設定
     API_HOST: str = "0.0.0.0"
@@ -57,5 +64,6 @@ for _dir in [
     settings.CORPUS_DIR,
     settings.CHROMA_DIR,
     settings.CONTRACTS_DEIDENTIFIED_DIR,
+    settings.FEEDBACK_DIR,
 ]:
     _dir.mkdir(parents=True, exist_ok=True)

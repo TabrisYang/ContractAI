@@ -159,6 +159,49 @@ def build_index(all_chunks: list[dict], full_rebuild: bool = False):
     return collection.count()
 
 
+def add_text_to_corpus(text: str, source: str) -> dict:
+    """將一份去識別化純文字增量加入 contract_corpus（含防重複）。
+
+    供 API 端點與 Celery 任務共用——讓「合約庫越大、檢索越廣」自動成立。
+    回傳統計 dict（added / reason / source / chunks / total_contracts / total_chunks）。
+    """
+    from collections import Counter
+    import chromadb
+
+    if not text or not text.strip():
+        return {"added": False, "reason": "empty", "source": source}
+
+    chroma = chromadb.PersistentClient(path=str(settings.CHROMA_DIR))
+
+    # 防重複：同一 source 已存在就不重加
+    try:
+        col = chroma.get_collection(COLLECTION_NAME)
+        hit = col.get(where={"source": source}, limit=1)
+        if hit and hit.get("ids"):
+            return {"added": False, "reason": "duplicate", "source": source}
+    except Exception:
+        pass  # collection 尚未建立 → 首次，build_index 會自動建立
+
+    chunks = chunk_text(text, source=source)
+    if not chunks:
+        return {"added": False, "reason": "too_short", "source": source}
+
+    build_index(chunks, full_rebuild=False)
+
+    col = chromadb.PersistentClient(path=str(settings.CHROMA_DIR)).get_collection(COLLECTION_NAME)
+    data = col.get(include=["metadatas"])
+    counts = Counter((m or {}).get("source", "?") for m in (data.get("metadatas") or []))
+    total_contracts, total_chunks = len(counts), col.count()
+    write_summary(total_contracts, total_chunks)
+    return {
+        "added": True,
+        "source": source,
+        "chunks": len(chunks),
+        "total_contracts": total_contracts,
+        "total_chunks": total_chunks,
+    }
+
+
 def write_summary(total_contracts: int, total_chunks: int):
     summary_path = settings.CHROMA_DIR / "corpus_summary.json"
     summary = {

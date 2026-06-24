@@ -17,6 +17,7 @@ from loguru import logger
 
 from ..models.schemas import MaskingMethod
 from .config import settings
+from .dynamic_rules import DynamicRules
 
 logger.add(
     settings.LOG_DIR / "deidentifier.log",
@@ -139,6 +140,7 @@ class DocumentDeidentifier:
     def __init__(self):
         self.nlp = None
         self.tfidf_vectorizer = None
+        self.dynamic_rules = DynamicRules()  # 由使用者回饋產生的白名單/字典
         self._load_models()
 
         # ── 第 1 層：基礎 Regex ──
@@ -196,6 +198,8 @@ class DocumentDeidentifier:
             logger.info(f"[{job_id}] {p:.0f}% - {msg}")
 
         progress(0, "讀取文件")
+        # 每次處理前重新載入動態規則，讓上一份合約的使用者修正即時生效
+        self.dynamic_rules.reload()
         doc = Document(input_path)
         paragraphs = [p.text for p in doc.paragraphs]
         full_text = "\n".join(paragraphs)
@@ -253,6 +257,12 @@ class DocumentDeidentifier:
             all_entities.extend(ents)
             stats["tfidf"] = len(ents)
 
+        # ── 動態字典：使用者回報「該遮但沒遮」的詞（回饋迴路 A）──
+        progress(68, "動態字典偵測（使用者回饋）")
+        ents = self._apply_dynamic_dictionary_masking(full_text)
+        all_entities.extend(ents)
+        stats["dynamic_dict"] = len(ents)
+
         # ── 傳播：已知實體的其他出現位置 ──
         progress(70, "實體傳播比對")
         ents = self._propagate_known_entities(full_text, all_entities)
@@ -276,6 +286,15 @@ class DocumentDeidentifier:
 
         progress(85, "合併重疊實體")
         merged = self._merge_overlapping_entities(all_entities)
+
+        # ── 動態白名單：移除使用者標記為「誤判」的詞（回饋迴路 A）──
+        if self.dynamic_rules.whitelist:
+            before = len(merged)
+            merged = [e for e in merged if not self.dynamic_rules.is_whitelisted(e["text"])]
+            removed = before - len(merged)
+            if removed:
+                stats["whitelist_removed"] = removed
+                logger.info(f"[{job_id}] 動態白名單移除 {removed} 個誤判實體")
 
         entities_by_type: Dict[str, int] = {}
         for e in merged:
@@ -417,6 +436,25 @@ class DocumentDeidentifier:
                 "confidence": 0.8,
             })
 
+        return entities
+
+    # ── 動態字典：使用者回饋產生的「該遮」清單 ──────────────────────
+
+    def _apply_dynamic_dictionary_masking(self, text: str) -> List[Dict]:
+        """掃描使用者回報過的漏網詞，強制標為敏感（回饋迴路 A）。"""
+        entities: List[Dict] = []
+        for term, etype in self.dynamic_rules.dictionary.items():
+            if not term:
+                continue
+            for m in re.finditer(re.escape(term), text):
+                entities.append({
+                    "text": m.group(),
+                    "entity_type": etype,
+                    "start_pos": m.start(),
+                    "end_pos": m.end(),
+                    "method": "feedback",
+                    "confidence": 0.99,
+                })
         return entities
 
     # ── 第 4 層：商業機密偵測 ─────────────────────────────────────
@@ -694,8 +732,17 @@ class DocumentDeidentifier:
         output_path = output_dir / f"{job_id}_deidentified.docx"
         doc.save(output_path)
 
+        # 加上穩定 id 與回饋欄位（供使用者修正回饋使用，回饋迴路 A）
+        entities_out = [
+            {
+                "id": f"{e['start_pos']}:{e['end_pos']}:{e['method']}",
+                **e,
+                "user_feedback": e.get("user_feedback"),
+            }
+            for e in entities
+        ]
         (output_dir / f"{job_id}_entities.json").write_text(
-            json.dumps(entities, ensure_ascii=False, indent=2),
+            json.dumps(entities_out, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 

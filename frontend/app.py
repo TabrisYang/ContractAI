@@ -230,6 +230,78 @@ def render_sidebar():
                     st.info("索引建立已在背景執行，完成後請重新整理頁面")
 
 
+# ── 去識別化回饋 UI（讓系統越用越準）────────────────────────────
+
+ENTITY_TYPES = [
+    "PERSON", "ORG", "PHONE", "EMAIL", "ADDRESS", "ID", "DATE", "MONEY",
+    "BANK", "BANK_ACCOUNT", "PROJECT_NAME", "BRAND", "FAX", "TAX_ID", "LLM_PII",
+]
+
+
+def render_entity_feedback(job_id: str):
+    """讓使用者標記去識別化的誤判 / 漏抓，回饋即時影響下一份合約。"""
+    with st.expander("✏️ 修正去識別化結果（標記誤判 / 補漏，讓系統越用越準）"):
+        try:
+            raw = requests.get(f"{API_BASE}/download/{job_id}?file_type=json", timeout=30)
+            entities = raw.json() if raw.ok else []
+        except Exception as e:
+            st.error(f"讀取實體清單失敗：{e}")
+            return
+        if not isinstance(entities, list):
+            entities = []
+
+        st.caption(
+            f"共偵測 {len(entities)} 個實體。標記「誤判」→ 該詞下一份不再遮罩；"
+            "「補漏」→ 該詞下一份一定遮罩（即時生效，不必重訓）。"
+        )
+
+        # 回報漏抓（false negative）
+        with st.form(key=f"missing_{job_id}", clear_on_submit=True):
+            st.write("**➕ 回報漏抓（該遮但沒遮的詞）**")
+            mc1, mc2 = st.columns([3, 2])
+            miss_text = mc1.text_input("文字", key=f"miss_txt_{job_id}")
+            miss_type = mc2.selectbox("類型", ENTITY_TYPES, key=f"miss_type_{job_id}")
+            if st.form_submit_button("送出補遮罩") and miss_text.strip():
+                r = api_post(
+                    f"/feedback/{job_id}/missing",
+                    json_data={"text": miss_text.strip(), "entity_type": miss_type},
+                )
+                if r:
+                    st.success("已記錄，下一份含此詞會被遮罩")
+
+        st.divider()
+        st.write("**偵測到的實體（標記誤判 / 改類型）**")
+        show = entities[:50]
+        for i, e in enumerate(show):
+            fb = e.get("user_feedback") or {}
+            tag = ""
+            if fb.get("is_valid") is False:
+                tag = "　🚫已標誤判"
+            elif fb.get("corrected_type"):
+                tag = f"　✎已改為 {fb['corrected_type']}"
+
+            c1, c2, c3, c4, c5 = st.columns([3, 2, 1.2, 1.8, 1])
+            c1.write(f"`{e.get('text', '')}`{tag}")
+            c2.caption(f"{e.get('entity_type')} · {e.get('method')}")
+            if c3.button("✗誤判", key=f"fp_{job_id}_{i}"):
+                if api_post(f"/feedback/{job_id}/entity",
+                            json_data={"entity_index": i, "is_valid": False}):
+                    st.toast("已標記誤判")
+                    st.rerun()
+            new_type = c4.selectbox(
+                "改類型", ["(改類型)"] + ENTITY_TYPES,
+                key=f"ct_{job_id}_{i}", label_visibility="collapsed",
+            )
+            if c5.button("套用", key=f"apply_{job_id}_{i}") and new_type != "(改類型)":
+                if api_post(f"/feedback/{job_id}/entity",
+                            json_data={"entity_index": i, "corrected_type": new_type}):
+                    st.toast(f"已改為 {new_type}")
+                    st.rerun()
+
+        if len(entities) > 50:
+            st.caption(f"（僅顯示前 50 個，共 {len(entities)} 個）")
+
+
 # ── Tab 1：去識別化 ──────────────────────────────────────────────
 
 def render_deidentify_tab():
@@ -335,6 +407,7 @@ def render_deidentify_tab():
     if last:
         st.divider()
         st.caption(f"最近完成的任務：`{last}`")
+        render_entity_feedback(last)
         if st.button("📚 加入合約庫（供日後生成參考）", use_container_width=True):
             with st.spinner("正在加入合約庫（首次需載入向量模型，請稍候）..."):
                 try:
@@ -501,9 +574,14 @@ def render_chat_tab():
             if result:
                 answer = result.get("message", "無法取得回答")
                 sources = result.get("sources", [])
+                source_ids = result.get("source_ids", [])
 
                 st.write(answer)
                 st.session_state["chat_history"].append({"role": "assistant", "content": answer})
+                # 記錄最近一則回答的命中段落，供下方評分使用（回饋迴路 B）
+                st.session_state["last_chat"] = {
+                    "job_id": job_id, "ids": source_ids, "rated": False,
+                }
 
                 if sources:
                     with st.expander(f"📌 參考段落（{len(sources)} 段）"):
@@ -512,6 +590,22 @@ def render_chat_tab():
                                 f'<div class="source-box"><b>段落 {i}：</b>{src[:300]}{"..." if len(src) > 300 else ""}</div>',
                                 unsafe_allow_html=True,
                             )
+
+    # ── 回答評分（讓系統學習更好的檢索；持久顯示，承受 Streamlit 重跑）──
+    lc = st.session_state.get("last_chat")
+    if lc and lc.get("ids") and not lc.get("rated"):
+        st.caption("上一則回答有幫助嗎？（你的評分會讓常被採用的段落更容易被檢索到）")
+        rc1, rc2, _ = st.columns([1, 1, 4])
+        if rc1.button("👍 有用", key="ans_up"):
+            if api_post(f"/feedback/{lc['job_id']}/answer",
+                        json_data={"chunk_ids": lc["ids"], "helpful": True}):
+                lc["rated"] = True
+                st.toast("感謝回饋！已為這些段落加分")
+        if rc2.button("👎 沒用", key="ans_down"):
+            if api_post(f"/feedback/{lc['job_id']}/answer",
+                        json_data={"chunk_ids": lc["ids"], "helpful": False}):
+                lc["rated"] = True
+                st.toast("已記錄")
 
     # 清除對話按鈕
     if st.session_state["chat_history"]:

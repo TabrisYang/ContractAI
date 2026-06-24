@@ -46,6 +46,7 @@ corpus/
 # 衍生資料 / 向量庫（源自真實合約，公開 repo 不應包含）
 chroma_db/
 contracts_deidentified/
+feedback/
 *.rdb
 
 # Jupyter Notebook

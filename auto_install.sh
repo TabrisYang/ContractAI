@@ -32,34 +32,18 @@ source venv/bin/activate
 echo "正在安裝 Python 依賴..."
 pip install --upgrade pip
 pip install -r requirements.txt
-python -m spacy download zh_core_web_trf
+python -m spacy download zh_core_web_sm
 
 # 創建必要的目錄
 mkdir -p uploads outputs models logs corpus
 
-# 創建 .env 文件
-cat > .env << 'ENV'
-# 應用程序設置
-DEBUG=True
-APP_NAME="合約去識別系統"
-
-# 文件路徑
-UPLOAD_DIR=./uploads
-OUTPUT_DIR=./outputs
-MODEL_DIR=./models
-LOG_DIR=./logs
-CORPUS_DIR=./corpus
-
-# Redis 設置
-REDIS_URL=redis://localhost:6379/0
-
-# 模型設置
-TFIDF_MODEL_PATH=./models/tfidf.pkl
-SPACY_MODEL=zh_core_web_trf
-
-# 去識別化設置
-RARE_TERM_THRESHOLD=0.02
-ENV
+# 創建 .env 文件（已存在則保留，不覆寫使用者設定）
+if [ -f .env ]; then
+    echo "已偵測到 .env，保留現有設定。"
+else
+    cp .env.example .env
+    echo "已從 .env.example 建立 .env。"
+fi
 
 # 創建測試數據
 echo "正在生成測試數據..."
@@ -76,9 +60,15 @@ cd "$(cd "$(dirname "$0")" && pwd)"
 source venv/bin/activate
 
 # 啟動 Redis（如果未運行）
+# 用 command -v 偵測，同時支援 Intel(/usr/local) 與 Apple Silicon(/opt/homebrew)
 if ! pgrep -x "redis-server" > /dev/null; then
+    REDIS_BIN="$(command -v redis-server)"
+    if [ -z "$REDIS_BIN" ]; then
+        echo "找不到 redis-server，請先執行：brew install redis" >&2
+        exit 1
+    fi
     echo "正在啟動 Redis 服務..."
-    /usr/local/bin/redis-server &
+    "$REDIS_BIN" &
     sleep 2
 fi
 

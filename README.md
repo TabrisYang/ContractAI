@@ -40,37 +40,58 @@
 # 2. 安裝 Redis
 brew install redis
 
-# 3. 創建並啟動虛擬環境
+# 3. (選用) 處理 .doc 與掃描型 PDF 所需的系統工具
+#    未安裝時 .docx 與電子文字型 PDF 仍可正常使用
+brew install --cask libreoffice                 # .doc 轉檔（保留排版）
+brew install poppler tesseract tesseract-lang   # 掃描型 PDF 的 OCR
+
+# 4. 創建並啟動虛擬環境
 conda create -n contract_deid python=3.11 -y
 conda activate contract_deid
 
-# 4. 安裝 Python 依賴
+# 5. 安裝 Python 依賴
 pip install -r requirements.txt
 
-# 5. 下載繁體中文模型
-python -m spacy download zh_core_web_trf
+# 6. 下載繁體中文 spaCy 模型
+#    zh_core_web_sm 為預設值（15MB）；未先下載時程式會於首次執行自動抓取
+python -m spacy download zh_core_web_sm
+#    若要改用較準的 zh_core_web_trf（415MB，建議搭配 GPU），
+#    請改下載它並在 .env 設定 SPACY_MODEL=zh_core_web_trf
 ```
 
 ### 2. 初始化專案
 
 ```bash
-# 1. 給腳本執行權限
-chmod +x setup.sh start_services.sh
+# 1. (選用) 建立 .env。每項設定都有預設值，沒有 .env 也能啟動
+cp .env.example .env
 
-# 2. 運行設置腳本
-./setup.sh
+# 2. 給腳本執行權限
+chmod +x start_services.sh
 
 # 3. 創建測試數據
 python create_test_data.py
 
-# 4. 訓練 TF-IDF 模型
+# 4. 訓練 TF-IDF 模型（產生 models/tfidf.pkl）
+#    略過此步時罕見詞偵測會自動停用，其餘功能不受影響
 python train_tfidf.py
 ```
 
 ### 3. 啟動服務
 
+兩種方式，擇一即可。
+
+**方式 A：Streamlit 圖形介面（推薦）**
+
+前端會自動把 Redis / Celery / FastAPI 一併帶起來。
+必須從專案根目錄執行，否則 `from frontend.backend_manager import ...` 會找不到套件：
+
 ```bash
-# 啟動 Redis 和所有服務
+streamlit run frontend/app.py
+```
+
+**方式 B：只啟動後端 API**
+
+```bash
 ./start_services.sh
 ```
 
@@ -80,25 +101,47 @@ python train_tfidf.py
 2. 使用 Swagger UI 上傳測試文件
 3. 查看 `outputs/` 目錄下的處理結果
 
+### 5. (選用) 建立合約知識庫，啟用「對話助手」與「合約生成」
+
+這兩項功能倚賴 RAG 向量索引。**在建立索引之前，`/api/v1/chat` 與 `/api/v1/generate` 會回傳 503**，
+去識別化主功能則完全不受影響。
+
+```bash
+# 1. 準備一個放原始 .docx 合約的資料夾。
+#    預設讀取 repo 外層的 ../contracts/，也可在 .env 指定：
+#    CONTRACTS_SOURCE_DIR=/絕對路徑/你的合約資料夾
+
+# 2. 建立索引（會先自動去識別化，再寫入 chroma_db/ 向量庫）
+python index_contracts.py
+```
+
+> 本 repo 不含任何合約資料、向量庫或訓練好的模型（皆已列入 `.gitignore`），
+> 你需要自備合約來建立自己的知識庫。
+
 ## 🛠 專案結構
+
+標示 (產生) 的目錄不在版控內，會於首次執行時自動建立。
 
 ```
 主程式/
 ├── src/                    # 主要原始碼
 │   ├── api/               # FastAPI 路由與端點
-│   ├── core/              # 核心處理邏輯
-│   ├── models/            # 資料模型
+│   ├── core/              # 核心處理邏輯（含 llm/ provider）
+│   ├── models/            # Pydantic 資料模型（schemas.py）
 │   └── utils/             # 工具函數
-├── models/                # 訓練好的模型與向量化器
-├── uploads/               # 上傳的原始檔案
-├── outputs/               # 處理後的輸出檔案
-├── logs/                  # 系統日誌
-├── corpus/                # 訓練用語料庫
-├── .env                  # 環境變數配置
-├── setup.sh              # 一鍵設置腳本
-├── start_services.sh     # 啟動服務腳本
-├── create_test_data.py   # 生成測試數據
-└── train_tfidf.py       # 訓練 TF-IDF 模型
+├── frontend/              # Streamlit 前端
+├── models/       (產生)    # 訓練好的模型與向量化器（tfidf.pkl）
+├── chroma_db/    (產生)    # RAG 向量資料庫
+├── uploads/      (產生)    # 上傳的原始檔案
+├── outputs/      (產生)    # 處理後的輸出檔案
+├── feedback/     (產生)    # 使用者回饋記錄
+├── logs/         (產生)    # 系統日誌
+├── corpus/       (產生)    # 訓練用語料庫
+├── .env.example           # 環境變數範本（複製成 .env）
+├── start_services.sh      # 啟動後端服務腳本
+├── create_test_data.py    # 生成測試數據
+├── train_tfidf.py         # 訓練 TF-IDF 模型
+└── index_contracts.py     # 建立 RAG 向量索引
 ```
 
 ## 📚 使用說明

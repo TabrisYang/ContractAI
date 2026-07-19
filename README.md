@@ -192,6 +192,18 @@ python train_tfidf.py --ngram-min 1 --ngram-max 3 --min-df 5
 2. 處理大型文件時可能需要較長時間
 3. 請勿將包含敏感信息的文件上傳到公共環境
 
+## 🤝 開發與貢獻
+
+修改本專案並推送前，請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)，重點包含：
+
+- **推送前檢查清單** — 哪些檔案絕不可提交（`.env`、真實合約、向量庫等）
+- **依賴改動的驗證方式** — 本機 venv 早已裝好，`requirements.txt` 寫錯只有全新環境才會炸
+- **CI 的涵蓋範圍** — 哪些改動自動把關，哪些必須手動測
+
+每次 push 與 PR 會自動於 Python 3.11 / 3.12 的乾淨環境驗證安裝、import
+與去識別化功能（見 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)）。
+CI 紅燈代表新使用者無法安裝，請勿忽略。
+
 ## 📄 授權
 
 MIT License

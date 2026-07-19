@@ -540,7 +540,11 @@ async def generate_contract_endpoint(request: ContractGenerationRequest):
 
     # 萃取需求（小 token）
     history_dicts = [{"role": m.role, "content": m.content} for m in request.history]
-    requirements = await gen.extract_requirements(request.message, llm, history_dicts)
+    try:
+        requirements = await gen.extract_requirements(request.message, llm, history_dicts)
+    except Exception as e:
+        logger.error(f"需求萃取失敗：{e}")
+        raise HTTPException(status_code=500, detail=f"LLM 回應失敗：{e}")
 
     # 資訊不足 → 追問
     if not requirements.is_complete():

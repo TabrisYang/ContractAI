@@ -1,0 +1,73 @@
+name: 全新環境安裝驗證
+
+# 本機開發時 venv 早已裝好，requirements.txt 寫錯也不會被發現。
+# 這個 workflow 專門模擬「新使用者 clone 下來從零安裝」，
+# 讓依賴問題在推送當下就被擋下，而不是等使用者回報。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  install:
+    # README 宣稱支援 Python 3.11+，兩個版本都要真的裝得起來
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 設定 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: 從零安裝依賴
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 檢查 import（不需 Redis）
+        run: |
+          python -c "import src.api.main; print('api OK')"
+          python -c "import src.celery_app; print('celery OK')"
+          python -c "import frontend.backend_manager; print('frontend OK')"
+
+      - name: 去識別化冒煙測試
+        # spaCy 模型由程式首次執行時自動下載，一併驗證這條路徑仍然可用
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from docx import Document
+
+          doc = Document()
+          doc.add_paragraph("甲方：王小明，身分證字號 A123456789，行動電話 0912-345-678。")
+          doc.add_paragraph("乙方：宏達電子股份有限公司，統一編號 12345678。")
+          Path("ci_tmp").mkdir(exist_ok=True)
+          doc.save("ci_tmp/contract.docx")
+
+          from src.core.deidentifier import DocumentDeidentifier
+
+          out = Path("ci_tmp/out")
+          out.mkdir(exist_ok=True)
+          result = DocumentDeidentifier().process("ci_tmp/contract.docx", out, "ci")
+
+          masked = "\n".join(
+              p.text for p in Document(out / "ci_deidentified.docx").paragraphs
+          )
+          print(masked)
+
+          # 敏感資訊必須全數消失，否則去識別化等同失效
+          for leaked in ("王小明", "A123456789", "0912-345-678", "12345678"):
+              assert leaked not in masked, f"未遮罩：{leaked}"
+          assert result["analysis"]["total_entities"] > 0, "未偵測到任何實體"
+          print("冒煙測試通過")
+          PY

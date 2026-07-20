@@ -51,6 +51,12 @@ jobs:
           doc = Document()
           doc.add_paragraph("甲方：王小明，身分證字號 A123456789，行動電話 0912-345-678。")
           doc.add_paragraph("乙方：宏達電子股份有限公司，統一編號 12345678。")
+          # 統編標籤的三種真實寫法，任一漏遮都會讓真實統編流入 RAG 語料庫
+          doc.add_paragraph("丙方  統號/身分證字號： 55555555")
+          doc.add_paragraph("丁方  統一編號（負責人）：66666666")
+          doc.add_paragraph("戊方  統　號： 77777777")
+          # 合約編號不是個資，不應被誤遮
+          doc.add_paragraph("本合約編號 EH20230726。")
           Path("ci_tmp").mkdir(exist_ok=True)
           doc.save("ci_tmp/contract.docx")
 
@@ -66,8 +72,12 @@ jobs:
           print(masked)
 
           # 敏感資訊必須全數消失，否則去識別化等同失效
-          for leaked in ("王小明", "A123456789", "0912-345-678", "12345678"):
+          for leaked in (
+              "王小明", "A123456789", "0912-345-678",
+              "12345678", "55555555", "66666666", "77777777",
+          ):
               assert leaked not in masked, f"未遮罩：{leaked}"
+          assert "EH20230726" in masked, "合約編號被誤遮，非個資不應遮罩"
           assert result["analysis"]["total_entities"] > 0, "未偵測到任何實體"
           print("冒煙測試通過")
           PY

@@ -44,7 +44,10 @@ ENV/
 /models/
 /corpus/
 
-# 衍生資料 / 向量庫（源自真實合約，公開 repo 不應包含）
+# 原始合約與衍生資料 / 向量庫（源自真實合約，公開 repo 不應包含）
+# /contracts/ 是 .env.example 建議的 CONTRACTS_SOURCE_DIR 位置，
+# 使用者一旦把真實合約放進來，沒有這條規則就會被推上公開 repo。
+/contracts/
 /chroma_db/
 /contracts_deidentified/
 /feedback/
